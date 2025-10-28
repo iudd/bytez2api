@@ -1,7 +1,7 @@
 {
   "tasks": {
-    "dev": "deno run --allow-net --allow-env server-deploy.ts",
-    "start": "deno run --allow-net --allow-env server-deploy.ts"
+    "dev": "deno run --allow-net --allow-env deno-deploy.ts",
+    "start": "deno run --allow-net --allow-env deno-deploy.ts"
   },
   "imports": {
     "oak": "https://deno.land/x/oak@v12.6.1/mod.ts"
