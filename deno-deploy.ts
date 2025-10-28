@@ -1,12 +1,15 @@
 /**
  * Bytez API 转换器 - Deno Deploy 专用版本
- * 极度简化，确保部署成功
+ * 连接到真实的 Bytez API 端点
  */
 
 import { Application, Router } from "https://deno.land/x/oak@v12.6.1/mod.ts";
 
 const app = new Application();
 const router = new Router();
+
+// Bytez API 端点
+const BYTEZ_BASE_URL = "https://api.bytez.com/models/v2/openai/v1";
 
 // 健康检查
 router.get("/", (ctx) => {
@@ -27,11 +30,92 @@ router.get("/v1/models", (ctx) => {
       created: 1234567890, 
       owned_by: "bytez" 
     },
+    { 
+      id: "Qwen/Qwen3-4B", 
+      object: "model", 
+      created: 1234567890, 
+      owned_by: "bytez" 
+    },
   ];
   ctx.response.body = { object: "list", data: models };
 });
 
-// 文本补全 API (简化版本)
+// 聊天补全 API (连接到真实 Bytez API)
+router.post("/v1/chat/completions", async (ctx) => {
+  try {
+    // 检查认证
+    const authorization = ctx.request.headers.get("authorization");
+    if (!authorization || !authorization.startsWith("BYTEZ_KEY ")) {
+      ctx.response.status = 401;
+      ctx.response.body = { error: "需要 BYTEZ_KEY 认证" };
+      return;
+    }
+
+    // 解析请求
+    let requestData;
+    try {
+      requestData = await ctx.request.body({ type: "json" }).value;
+    } catch (e) {
+      ctx.response.status = 400;
+      ctx.response.body = { error: `无效的 JSON: ${e}` };
+      return;
+    }
+
+    const model = requestData.model || "Qwen/Qwen3-4B";
+    const messages = requestData.messages || [];
+    const stream = requestData.stream || false;
+
+    if (!messages.length) {
+      ctx.response.status = 400;
+      ctx.response.body = { error: "messages 不能为空" };
+      return;
+    }
+
+    // 转发请求到真实的 Bytez API
+    const bytezResponse = await fetch(`${BYTEZ_BASE_URL}/chat/completions`, {
+      method: "POST",
+      headers: {
+        "Authorization": authorization,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: model,
+        messages: messages,
+        temperature: requestData.temperature || 0.7,
+        max_tokens: requestData.max_tokens || 150,
+        stream: stream
+      })
+    });
+
+    if (!bytezResponse.ok) {
+      const errorText = await bytezResponse.text();
+      console.error("Bytez API 错误:", bytezResponse.status, errorText);
+      ctx.response.status = bytezResponse.status;
+      ctx.response.body = { error: `Bytez API 错误: ${bytezResponse.status}` };
+      return;
+    }
+
+    // 如果是流式响应，直接转发
+    if (stream) {
+      ctx.response.headers.set("Content-Type", "text/event-stream; charset=utf-8");
+      ctx.response.headers.set("Cache-Control", "no-cache");
+      ctx.response.headers.set("Connection", "keep-alive");
+      
+      ctx.response.body = bytezResponse.body;
+    } else {
+      // 非流式响应，解析 JSON
+      const result = await bytezResponse.json();
+      ctx.response.body = result;
+    }
+
+  } catch (error) {
+    console.error("处理请求错误:", error);
+    ctx.response.status = 500;
+    ctx.response.body = { error: "Internal Server Error" };
+  }
+});
+
+// 文本补全 API (连接到真实 Bytez API)
 router.post("/v1/completions", async (ctx) => {
   try {
     // 检查认证
@@ -62,57 +146,41 @@ router.post("/v1/completions", async (ctx) => {
       return;
     }
 
-    const requestId = `completion-${Date.now()}`;
+    // 转发请求到真实的 Bytez API
+    const bytezResponse = await fetch(`${BYTEZ_BASE_URL}/completions`, {
+      method: "POST",
+      headers: {
+        "Authorization": authorization,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: model,
+        prompt: prompt,
+        temperature: requestData.temperature || 0.7,
+        max_tokens: requestData.max_tokens || 150,
+        stream: stream
+      })
+    });
 
+    if (!bytezResponse.ok) {
+      const errorText = await bytezResponse.text();
+      console.error("Bytez API 错误:", bytezResponse.status, errorText);
+      ctx.response.status = bytezResponse.status;
+      ctx.response.body = { error: `Bytez API 错误: ${bytezResponse.status}` };
+      return;
+    }
+
+    // 如果是流式响应，直接转发
     if (stream) {
-      // 流式响应 (简化)
       ctx.response.headers.set("Content-Type", "text/event-stream; charset=utf-8");
       ctx.response.headers.set("Cache-Control", "no-cache");
       ctx.response.headers.set("Connection", "keep-alive");
-
-      const encoder = new TextEncoder();
-      const body = new ReadableStream({
-        async start(controller) {
-          // 发送开始标记
-          controller.enqueue(encoder.encode(`data: {"id":"${requestId}","object":"text_completion.chunk","created":${Math.floor(Date.now()/1000)},"model":"${model}","choices":[{"text":"","index":0,"finish_reason":null}]}\n\n`));
-          
-          // 模拟流式响应
-          const response = "这是 Bytez API 的模拟响应。服务已成功部署到 Deno Deploy。";
-          const words = response.split(" ");
-          
-          for (const word of words) {
-            controller.enqueue(encoder.encode(`data: {"id":"${requestId}","object":"text_completion.chunk","created":${Math.floor(Date.now()/1000)},"model":"${model}","choices":[{"text":"${word} ","index":0,"finish_reason":null}]}\n\n`));
-            await new Promise(resolve => setTimeout(resolve, 100));
-          }
-          
-          // 发送结束标记
-          controller.enqueue(encoder.encode(`data: {"id":"${requestId}","object":"text_completion.chunk","created":${Math.floor(Date.now()/1000)},"model":"${model}","choices":[{"text":"","index":0,"finish_reason":"stop"}]}\n\n`));
-          controller.enqueue(encoder.encode("data: [DONE]\n\n"));
-          controller.close();
-        }
-      });
       
-      ctx.response.body = body;
+      ctx.response.body = bytezResponse.body;
     } else {
-      // 非流式响应
-      ctx.response.body = {
-        id: requestId,
-        object: "text_completion",
-        created: Math.floor(Date.now() / 1000),
-        model,
-        choices: [
-          {
-            text: "这是 Bytez API 的模拟响应。服务已成功部署到 Deno Deploy。",
-            index: 0,
-            finish_reason: "stop",
-          },
-        ],
-        usage: {
-          prompt_tokens: prompt.length,
-          completion_tokens: 10,
-          total_tokens: prompt.length + 10,
-        },
-      };
+      // 非流式响应，解析 JSON
+      const result = await bytezResponse.json();
+      ctx.response.body = result;
     }
   } catch (error) {
     console.error("处理请求错误:", error);
