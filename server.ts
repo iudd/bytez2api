@@ -1,7 +1,7 @@
 /**
  * OpenAI 兼容的 Bytez API 转换器 (无状态版本)
  * 客户端通过 Authorization: BYTEZ_KEY 传递 API Key
- * Deno 版本
+ * Deno 版本 - 修复部署版本
  */
 
 import { Application, Router } from "https://deno.land/x/oak@v12.6.1/mod.ts";
