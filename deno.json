@@ -1,10 +1,11 @@
 {
   "tasks": {
-    "dev": "deno run --allow-net --allow-env deno-deploy.ts",
-    "start": "deno run --allow-net --allow-env deno-deploy.ts"
+    "dev": "deno run --allow-net --allow-env demo-cto-new.ts",
+    "start": "deno run --allow-net --allow-env demo-cto-new.ts"
   },
   "imports": {
-    "oak": "https://deno.land/x/oak@v12.6.1/mod.ts"
+    "oak": "https://deno.land/x/oak@v12.6.1/mod.ts",
+    "djwt": "https://deno.land/x/djwt@v3.0.1/mod.ts"
   },
   "compilerOptions": {
     "lib": ["deno.window"]
