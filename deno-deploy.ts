@@ -143,7 +143,7 @@ app.use(router.routes());
 app.use(router.allowedMethods());
 
 // 启动服务器
-const port = parseInt(Deno.env.get("PORT") || "8000");
-console.log(`🚀 Deno Deploy 服务器运行在端口 ${port}`);
-
+const port = 8000;
+console.log(`🚀 Deno Deploy 服务器运行在 http://localhost:${port}`);
+console.log(`📚 Bytez-OpenAI-Proxy Deno Deploy 版本 v1.0.0`);
 await app.listen({ port });
