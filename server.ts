@@ -92,12 +92,12 @@ function createCompletionResponse(
 async function* streamChatGenerator(
   requestId: string,
   model: string,
-  userId: string,
+  apiKey: string,
   fullPrompt: string,
   isChat: boolean = false
 ): AsyncGenerator<Uint8Array> {
   const encoder = new TextEncoder();
-  const wsUrl = `wss://api.bytez.com/models/v2/openai/v1/completions/stream?token=${userId}`;
+  const wsUrl = `wss://api.bytez.com/models/v2/openai/v1/completions/stream?token=${apiKey}`;
 
   yield encoder.encode(createSSEChunk(requestId, model, "", null, isChat));
 
@@ -113,7 +113,7 @@ async function* streamChatGenerator(
 
     await new Promise<void>((resolve, reject) => {
       ws.onopen = () => {
-        console.log(`WebSocket 已连接: ${userId}`);
+        console.log(`WebSocket 已连接: ${apiKey.slice(0, 10)}...`);
         resolve();
       };
       ws.onerror = (e) => reject(e);
@@ -127,7 +127,7 @@ async function* streamChatGenerator(
         max_tokens: 150,
       };
       const headers = {
-        Authorization: `Bearer ${Deno.env.get("BYTEZ_API_KEY")}`,
+        Authorization: `Bearer ${apiKey}`,
         "Content-Type": "application/json",
       };
 
@@ -287,11 +287,11 @@ async function* wsMessageIterator(
 async function nonStreamChat(
   requestId: string,
   model: string,
-  userId: string,
+  apiKey: string,
   fullPrompt: string,
   isChat: boolean = false
 ): Promise<string> {
-  const wsUrl = `wss://api.bytez.com/models/v2/openai/v1/completions/stream?token=${userId}`;
+  const wsUrl = `wss://api.bytez.com/models/v2/openai/v1/completions/stream?token=${apiKey}`;
   let fullContent = "";
 
   try {
@@ -300,7 +300,7 @@ async function nonStreamChat(
 
     await new Promise<void>((resolve, reject) => {
       ws.onopen = () => {
-        console.log(`WebSocket 已连接 (非流式): ${userId}`);
+        console.log(`WebSocket 已连接 (非流式): ${apiKey.slice(0, 10)}...`);
         resolve();
       };
       ws.onerror = (e) => reject(e);
@@ -313,7 +313,7 @@ async function nonStreamChat(
       max_tokens: 150,
     };
     const headers = {
-      Authorization: `Bearer ${Deno.env.get("BYTEZ_API_KEY")}`,
+      Authorization: `Bearer ${apiKey}`,
       "Content-Type": "application/json",
     };
 
@@ -427,12 +427,31 @@ function extractPromptFromMessages(messages: Array<{ role: string; content: stri
   return messages.map(msg => `${msg.role}: ${msg.content}`).join("\n");
 }
 
+function extractApiKey(authorization: string | null): string | null {
+  if (!authorization) return null;
+  
+  // 支持 Bearer 格式
+  if (authorization.startsWith("Bearer ")) {
+    return authorization.slice(7);
+  }
+  
+  // 支持 BYTEZ_KEY 格式（向后兼容）
+  if (authorization.startsWith("BYTEZ_KEY ")) {
+    return authorization.slice(10);
+  }
+  
+  // 直接返回原始值（如果没有前缀）
+  return authorization;
+}
+
 const router = new Router();
 
 // 原有的 completions 端点
 router.post("/v1/completions", async (ctx) => {
   const authorization = ctx.request.headers.get("authorization");
-  if (!authorization) {
+  const apiKey = extractApiKey(authorization);
+  
+  if (!apiKey) {
     ctx.response.status = 401;
     ctx.response.body = { error: "需要 API Key 认证" };
     return;
@@ -457,7 +476,6 @@ router.post("/v1/completions", async (ctx) => {
     return;
   }
 
-  const userId = "default_user_id";
   const requestId = `completion-${crypto.randomUUID()}`;
 
   if (stream) {
@@ -466,11 +484,11 @@ router.post("/v1/completions", async (ctx) => {
     ctx.response.headers.set("Connection", "keep-alive");
     ctx.response.headers.set("X-Accel-Buffering", "no");
 
-    const body = streamChatGenerator(requestId, model, userId, prompt, false);
+    const body = streamChatGenerator(requestId, model, apiKey, prompt, false);
     ctx.response.body = body;
   } else {
     try {
-      const fullContent = await nonStreamChat(requestId, model, userId, prompt, false);
+      const fullContent = await nonStreamChat(requestId, model, apiKey, prompt, false);
       ctx.response.body = createCompletionResponse(requestId, model, fullContent, false);
     } catch (e) {
       ctx.response.status = 500;
@@ -482,7 +500,9 @@ router.post("/v1/completions", async (ctx) => {
 // 新增的 chat/completions 端点
 router.post("/v1/chat/completions", async (ctx) => {
   const authorization = ctx.request.headers.get("authorization");
-  if (!authorization) {
+  const apiKey = extractApiKey(authorization);
+  
+  if (!apiKey) {
     ctx.response.status = 401;
     ctx.response.body = { error: "需要 API Key 认证" };
     return;
@@ -508,7 +528,6 @@ router.post("/v1/chat/completions", async (ctx) => {
   }
 
   const fullPrompt = extractPromptFromMessages(messages);
-  const userId = "default_user_id";
   const requestId = `chat-${crypto.randomUUID()}`;
 
   if (stream) {
@@ -517,11 +536,11 @@ router.post("/v1/chat/completions", async (ctx) => {
     ctx.response.headers.set("Connection", "keep-alive");
     ctx.response.headers.set("X-Accel-Buffering", "no");
 
-    const body = streamChatGenerator(requestId, model, userId, fullPrompt, true);
+    const body = streamChatGenerator(requestId, model, apiKey, fullPrompt, true);
     ctx.response.body = body;
   } else {
     try {
-      const fullContent = await nonStreamChat(requestId, model, userId, fullPrompt, true);
+      const fullContent = await nonStreamChat(requestId, model, apiKey, fullPrompt, true);
       ctx.response.body = createCompletionResponse(requestId, model, fullContent, true);
     } catch (e) {
       ctx.response.status = 500;
@@ -533,6 +552,7 @@ router.post("/v1/chat/completions", async (ctx) => {
 router.get("/v1/models", (ctx) => {
   const models = [
     { id: "openai-community/gpt2", object: "model", created: 1234567890, owned_by: "bytez" },
+    { id: "Qwen/Qwen3-4B", object: "model", created: 1234567890, owned_by: "bytez" },
   ];
   ctx.response.body = { object: "list", data: models };
 });
@@ -542,6 +562,7 @@ router.get("/", (ctx) => {
     status: "ok",
     service: "bytez-openai-proxy",
     version: "1.0.0",
+    message: "Deno Deploy 专用版本运行正常",
   };
 });
 
