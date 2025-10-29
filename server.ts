@@ -1,6 +1,6 @@
 /**
  * OpenAI 兼容的 Bytez API 转换器 (无状态版本)
- * 客户端通过 Authorization: BYTEZ_KEY 传递 API Key
+ * 客户端通过 Authorization: Bearer YOUR_API_KEY 传递 API Key
  * Deno 版本
  */
 
@@ -16,6 +16,14 @@ interface CompletionRequest {
   stream?: boolean;
 }
 
+interface ChatCompletionRequest {
+  model: string;
+  messages: Array<{ role: string; content: string }>;
+  temperature?: number;
+  max_tokens?: number;
+  stream?: boolean;
+}
+
 interface SSEChunk {
   id: string;
   object: string;
@@ -23,7 +31,8 @@ interface SSEChunk {
   model: string;
   choices: Array<{
     index: number;
-    text: string;
+    text?: string;
+    delta?: { content?: string };
     finish_reason: string | null;
   }>;
 }
@@ -32,17 +41,18 @@ function createSSEChunk(
   requestId: string,
   model: string,
   content: string,
-  finishReason: string | null = null
+  finishReason: string | null = null,
+  isChat: boolean = false
 ): string {
   const chunk: SSEChunk = {
     id: requestId,
-    object: "text_completion.chunk",
+    object: isChat ? "chat.completion.chunk" : "text_completion.chunk",
     created: Math.floor(Date.now() / 1000),
     model,
     choices: [
       {
         index: 0,
-        text: content,
+        ...(isChat ? { delta: { content } } : { text: content }),
         finish_reason: finishReason,
       },
     ],
@@ -53,16 +63,20 @@ function createSSEChunk(
 function createCompletionResponse(
   requestId: string,
   model: string,
-  content: string
+  content: string,
+  isChat: boolean = false
 ): any {
   return {
     id: requestId,
-    object: "text_completion",
+    object: isChat ? "chat.completion" : "text_completion",
     created: Math.floor(Date.now() / 1000),
     model,
     choices: [
       {
-        text: content,
+        ...(isChat 
+          ? { message: { role: "assistant", content } }
+          : { text: content }
+        ),
         index: 0,
         finish_reason: "stop",
       },
@@ -79,12 +93,13 @@ async function* streamChatGenerator(
   requestId: string,
   model: string,
   userId: string,
-  fullPrompt: string
+  fullPrompt: string,
+  isChat: boolean = false
 ): AsyncGenerator<Uint8Array> {
   const encoder = new TextEncoder();
   const wsUrl = `wss://api.bytez.com/models/v2/openai/v1/completions/stream?token=${userId}`;
 
-  yield encoder.encode(createSSEChunk(requestId, model, ""));
+  yield encoder.encode(createSSEChunk(requestId, model, "", null, isChat));
 
   let receivedUpdate = false;
   let lastBufferType: string | null = null;
@@ -112,7 +127,7 @@ async function* streamChatGenerator(
         max_tokens: 150,
       };
       const headers = {
-        Authorization: `Bearer BYTEZ_KEY`, // 直接使用 BYTEZ_KEY 认证
+        Authorization: `Bearer ${Deno.env.get("BYTEZ_API_KEY")}`,
         "Content-Type": "application/json",
       };
 
@@ -156,11 +171,11 @@ async function* streamChatGenerator(
               if (content) {
                 if (bufferType !== lastBufferType) {
                   if (inThinkingBlock) {
-                    yield encoder.encode(createSSEChunk(requestId, model, "]]\n\n"));
+                    yield encoder.encode(createSSEChunk(requestId, model, "]]\n\n", null, isChat));
                     inThinkingBlock = false;
                   }
                   if (bufferType === "thinking") {
-                    yield encoder.encode(createSSEChunk(requestId, model, " "));
+                    yield encoder.encode(createSSEChunk(requestId, model, " ", null, isChat));
                     inThinkingBlock = true;
                   }
                   lastBufferType = bufferType;
@@ -189,7 +204,7 @@ async function* streamChatGenerator(
                   prevContentByType[bufferType] = content;
                 }
                 if (delta) {
-                  yield encoder.encode(createSSEChunk(requestId, model, delta));
+                  yield encoder.encode(createSSEChunk(requestId, model, delta, null, isChat));
                 }
               }
             }
@@ -200,7 +215,7 @@ async function* streamChatGenerator(
           const state = data.state || {};
           if (!state.inProgress && receivedUpdate) {
             if (inThinkingBlock) {
-              yield encoder.encode(createSSEChunk(requestId, model, "]]\n\n"));
+              yield encoder.encode(createSSEChunk(requestId, model, "]]\n\n", null, isChat));
               inThinkingBlock = false;
             }
             break;
@@ -213,11 +228,11 @@ async function* streamChatGenerator(
 
     ws.close();
 
-    yield encoder.encode(createSSEChunk(requestId, model, "", "stop"));
+    yield encoder.encode(createSSEChunk(requestId, model, "", "stop", isChat));
     yield encoder.encode("data: [DONE]\n\n");
   } catch (e) {
     console.error(`流式处理异常: ${e}`);
-    yield encoder.encode(createSSEChunk(requestId, model, `错误: ${e}`, "stop"));
+    yield encoder.encode(createSSEChunk(requestId, model, `错误: ${e}`, "stop", isChat));
     yield encoder.encode("data: [DONE]\n\n");
   }
 }
@@ -273,7 +288,8 @@ async function nonStreamChat(
   requestId: string,
   model: string,
   userId: string,
-  fullPrompt: string
+  fullPrompt: string,
+  isChat: boolean = false
 ): Promise<string> {
   const wsUrl = `wss://api.bytez.com/models/v2/openai/v1/completions/stream?token=${userId}`;
   let fullContent = "";
@@ -297,7 +313,7 @@ async function nonStreamChat(
       max_tokens: 150,
     };
     const headers = {
-      Authorization: `Bearer BYTEZ_KEY`, // 直接使用 BYTEZ_KEY 认证
+      Authorization: `Bearer ${Deno.env.get("BYTEZ_API_KEY")}`,
       "Content-Type": "application/json",
     };
 
@@ -407,13 +423,18 @@ async function nonStreamChat(
   }
 }
 
+function extractPromptFromMessages(messages: Array<{ role: string; content: string }>): string {
+  return messages.map(msg => `${msg.role}: ${msg.content}`).join("\n");
+}
+
 const router = new Router();
 
+// 原有的 completions 端点
 router.post("/v1/completions", async (ctx) => {
   const authorization = ctx.request.headers.get("authorization");
-  if (!authorization || !authorization.startsWith("BYTEZ_KEY ")) {
+  if (!authorization) {
     ctx.response.status = 401;
-    ctx.response.body = { error: "需要 BYTEZ_KEY 认证" };
+    ctx.response.body = { error: "需要 API Key 认证" };
     return;
   }
 
@@ -428,8 +449,6 @@ router.post("/v1/completions", async (ctx) => {
 
   const model = requestData.model || "openai-community/gpt2";
   const prompt = requestData.prompt || "";
-  const temperature = requestData.temperature || 0.7;
-  const max_tokens = requestData.max_tokens || 150;
   const stream = requestData.stream || false;
 
   if (!prompt.trim()) {
@@ -438,7 +457,7 @@ router.post("/v1/completions", async (ctx) => {
     return;
   }
 
-  const userId = "default_user_id"; // 直接使用默认用户 ID（无需 JWT）
+  const userId = "default_user_id";
   const requestId = `completion-${crypto.randomUUID()}`;
 
   if (stream) {
@@ -447,12 +466,63 @@ router.post("/v1/completions", async (ctx) => {
     ctx.response.headers.set("Connection", "keep-alive");
     ctx.response.headers.set("X-Accel-Buffering", "no");
 
-    const body = streamChatGenerator(requestId, model, userId, prompt);
+    const body = streamChatGenerator(requestId, model, userId, prompt, false);
     ctx.response.body = body;
   } else {
     try {
-      const fullContent = await nonStreamChat(requestId, model, userId, prompt);
-      ctx.response.body = createCompletionResponse(requestId, model, fullContent);
+      const fullContent = await nonStreamChat(requestId, model, userId, prompt, false);
+      ctx.response.body = createCompletionResponse(requestId, model, fullContent, false);
+    } catch (e) {
+      ctx.response.status = 500;
+      ctx.response.body = { error: `处理请求失败: ${e}` };
+    }
+  }
+});
+
+// 新增的 chat/completions 端点
+router.post("/v1/chat/completions", async (ctx) => {
+  const authorization = ctx.request.headers.get("authorization");
+  if (!authorization) {
+    ctx.response.status = 401;
+    ctx.response.body = { error: "需要 API Key 认证" };
+    return;
+  }
+
+  const requestData: ChatCompletionRequest;
+  try {
+    requestData = await ctx.request.body({ type: "json" }).value;
+  } catch (e) {
+    ctx.response.status = 400;
+    ctx.response.body = { error: `无效的 JSON: ${e}` };
+    return;
+  }
+
+  const model = requestData.model || "openai-community/gpt2";
+  const messages = requestData.messages || [];
+  const stream = requestData.stream || false;
+
+  if (messages.length === 0) {
+    ctx.response.status = 400;
+    ctx.response.body = { error: "messages 不能为空" };
+    return;
+  }
+
+  const fullPrompt = extractPromptFromMessages(messages);
+  const userId = "default_user_id";
+  const requestId = `chat-${crypto.randomUUID()}`;
+
+  if (stream) {
+    ctx.response.headers.set("Content-Type", "text/event-stream; charset=utf-8");
+    ctx.response.headers.set("Cache-Control", "no-cache");
+    ctx.response.headers.set("Connection", "keep-alive");
+    ctx.response.headers.set("X-Accel-Buffering", "no");
+
+    const body = streamChatGenerator(requestId, model, userId, fullPrompt, true);
+    ctx.response.body = body;
+  } else {
+    try {
+      const fullContent = await nonStreamChat(requestId, model, userId, fullPrompt, true);
+      ctx.response.body = createCompletionResponse(requestId, model, fullContent, true);
     } catch (e) {
       ctx.response.status = 500;
       ctx.response.body = { error: `处理请求失败: ${e}` };
@@ -497,7 +567,7 @@ app.use(async (ctx, next) => {
 app.use(router.routes());
 app.use(router.allowedMethods());
 
-const port = 8000;
+const port = parseInt(Deno.env.get("PORT") || "8000");
 console.log(`🚀 服务器运行在 http://localhost:${port}`);
 console.log(`📚 Bytez-OpenAI-Proxy v1.0.0`);
 await app.listen({ port });
