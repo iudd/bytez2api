@@ -14,10 +14,12 @@ const BYTEZ_BASE_URL = "https://api.bytez.com/models/v2/openai/v1";
 // 模型配置 - 不同模型支持的参数不同
 const MODEL_CONFIG = {
   "openai-community/gpt2": {
-    supportedParams: ["model", "prompt", "temperature", "max_tokens", "stream", "top_p", "stop"]
+    supportedParams: ["model", "prompt", "temperature", "max_tokens", "stream", "top_p", "stop"],
+    timeout: 30000 // 30秒超时
   },
   "Qwen/Qwen3-4B": {
-    supportedParams: ["model", "messages", "temperature", "max_tokens", "stream", "top_p", "stop", "frequency_penalty", "presence_penalty"]
+    supportedParams: ["model", "messages", "temperature", "max_tokens", "stream", "top_p", "stop", "frequency_penalty", "presence_penalty"],
+    timeout: 60000 // 60秒超时，给思考更多时间
   }
 };
 
@@ -52,6 +54,9 @@ router.get("/v1/models", (ctx) => {
 
 // 聊天补全 API (连接到真实 Bytez API)
 router.post("/v1/chat/completions", async (ctx) => {
+  const requestId = `chat-${crypto.randomUUID()}`;
+  console.log(`[${requestId}] 开始处理chat/completions请求`);
+  
   try {
     // 检查认证 - 支持 Bearer 和 BYTEZ_KEY 两种格式
     const authorization = ctx.request.headers.get("authorization");
@@ -121,64 +126,123 @@ router.post("/v1/chat/completions", async (ctx) => {
       requestBody.stop = requestData.stop || null;
     }
 
-    console.log("发送到Bytez的chat请求:", JSON.stringify(requestBody, null, 2));
+    console.log(`[${requestId}] 发送请求到Bytez:`, JSON.stringify(requestBody, null, 2));
 
-    // 转发请求到真实的 Bytez API
-    const bytezResponse = await fetch(`${BYTEZ_BASE_URL}/chat/completions`, {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-        "User-Agent": "bytez-proxy/1.0.0"
-      },
-      body: JSON.stringify(requestBody)
-    });
+    // 使用AbortController控制超时
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => {
+      console.log(`[${requestId}] 请求超时，中止连接`);
+      controller.abort();
+    }, modelConfig.timeout);
 
-    console.log("Bytez API响应状态:", bytezResponse.status);
-
-    if (!bytezResponse.ok) {
-      const errorText = await bytezResponse.text();
-      console.error("Bytez API chat错误详情:", {
-        status: bytezResponse.status,
-        statusText: bytezResponse.statusText,
-        body: errorText,
-        headers: Object.fromEntries(bytezResponse.headers.entries())
+    try {
+      // 转发请求到真实的 Bytez API
+      const bytezResponse = await fetch(`${BYTEZ_BASE_URL}/chat/completions`, {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
+          "User-Agent": "bytez-proxy/1.0.0",
+          "Connection": "close" // 避免连接复用问题
+        },
+        body: JSON.stringify(requestBody),
+        signal: controller.signal
       });
+
+      clearTimeout(timeoutId);
+      console.log(`[${requestId}] Bytez API响应状态:`, bytezResponse.status);
+
+      if (!bytezResponse.ok) {
+        const errorText = await bytezResponse.text();
+        console.error(`[${requestId}] Bytez API错误:`, {
+          status: bytezResponse.status,
+          statusText: bytezResponse.statusText,
+          body: errorText
+        });
+        
+        ctx.response.status = bytezResponse.status;
+        
+        try {
+          const errorJson = JSON.parse(errorText);
+          ctx.response.body = { 
+            error: `Bytez API 错误: ${bytezResponse.status}`,
+            details: errorJson
+          };
+        } catch {
+          ctx.response.body = { 
+            error: `Bytez API 错误: ${bytezResponse.status}`,
+            details: errorText
+          };
+        }
+        return;
+      }
+
+      // 如果是流式响应，需要特殊处理
+      if (stream) {
+        console.log(`[${requestId}] 处理流式响应`);
+        ctx.response.headers.set("Content-Type", "text/event-stream; charset=utf-8");
+        ctx.response.headers.set("Cache-Control", "no-cache");
+        ctx.response.headers.set("Connection", "keep-alive");
+        ctx.response.headers.set("Access-Control-Allow-Origin", "*");
+        
+        const reader = bytezResponse.body?.getReader();
+        const encoder = new TextEncoder();
+        
+        if (!reader) {
+          throw new Error("无法读取响应流");
+        }
+
+        // 创建一个异步生成器来处理流
+        async function* streamGenerator() {
+          try {
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) {
+                console.log(`[${requestId}] 流式响应完成`);
+                break;
+              }
+              
+              const chunk = new TextDecoder().decode(value);
+              console.log(`[${requestId}] 收到流数据:`, chunk.substring(0, 100) + (chunk.length > 100 ? "..." : ""));
+              yield encoder.encode(chunk);
+            }
+          } catch (error) {
+            console.error(`[${requestId}] 流处理错误:`, error);
+            // 发送错误结束标记
+            yield encoder.encode(`data: {"error": "流处理中断: ${error.message}"}\n\n`);
+            yield encoder.encode("data: [DONE]\n\n");
+          } finally {
+            reader.releaseLock();
+          }
+        }
+
+        ctx.response.body = streamGenerator();
+      } else {
+        // 非流式响应
+        const result = await bytezResponse.json();
+        console.log(`[${requestId}] 成功响应:`, JSON.stringify(result, null, 2));
+        ctx.response.body = result;
+      }
+
+    } catch (fetchError) {
+      clearTimeout(timeoutId);
       
-      ctx.response.status = bytezResponse.status;
-      
-      // 尝试解析错误响应
-      try {
-        const errorJson = JSON.parse(errorText);
+      if (fetchError.name === 'AbortError') {
+        console.error(`[${requestId}] 请求被中止（超时）`);
+        ctx.response.status = 408;
+        ctx.response.body = { error: "请求超时，请稍后重试" };
+      } else {
+        console.error(`[${requestId}] 请求异常:`, fetchError);
+        ctx.response.status = 500;
         ctx.response.body = { 
-          error: `Bytez API 错误: ${bytezResponse.status}`,
-          details: errorJson
-        };
-      } catch {
-        ctx.response.body = { 
-          error: `Bytez API 错误: ${bytezResponse.status}`,
-          details: errorText
+          error: "请求失败",
+          details: fetchError.message
         };
       }
-      return;
-    }
-
-    // 如果是流式响应，直接转发
-    if (stream) {
-      ctx.response.headers.set("Content-Type", "text/event-stream; charset=utf-8");
-      ctx.response.headers.set("Cache-Control", "no-cache");
-      ctx.response.headers.set("Connection", "keep-alive");
-      
-      ctx.response.body = bytezResponse.body;
-    } else {
-      // 非流式响应，解析 JSON
-      const result = await bytezResponse.json();
-      console.log("Bytez API chat成功响应:", JSON.stringify(result, null, 2));
-      ctx.response.body = result;
     }
 
   } catch (error) {
-    console.error("处理请求错误:", error);
+    console.error(`[${requestId}] 处理请求错误:`, error);
     ctx.response.status = 500;
     ctx.response.body = { 
       error: "Internal Server Error",
@@ -189,6 +253,9 @@ router.post("/v1/chat/completions", async (ctx) => {
 
 // 文本补全 API (连接到真实 Bytez API)
 router.post("/v1/completions", async (ctx) => {
+  const requestId = `completion-${crypto.randomUUID()}`;
+  console.log(`[${requestId}] 开始处理completions请求`);
+  
   try {
     // 检查认证 - 支持 Bearer 和 BYTEZ_KEY 两种格式
     const authorization = ctx.request.headers.get("authorization");
@@ -258,63 +325,123 @@ router.post("/v1/completions", async (ctx) => {
       requestBody.stop = requestData.stop || null;
     }
 
-    console.log("发送到Bytez的completion请求:", JSON.stringify(requestBody, null, 2));
+    console.log(`[${requestId}] 发送completion请求到Bytez:`, JSON.stringify(requestBody, null, 2));
 
-    // 转发请求到真实的 Bytez API
-    const bytezResponse = await fetch(`${BYTEZ_BASE_URL}/completions`, {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-        "User-Agent": "bytez-proxy/1.0.0"
-      },
-      body: JSON.stringify(requestBody)
-    });
+    // 使用AbortController控制超时
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => {
+      console.log(`[${requestId}] completion请求超时，中止连接`);
+      controller.abort();
+    }, modelConfig.timeout);
 
-    console.log("Bytez API completion响应状态:", bytezResponse.status);
-
-    if (!bytezResponse.ok) {
-      const errorText = await bytezResponse.text();
-      console.error("Bytez API completion错误详情:", {
-        status: bytezResponse.status,
-        statusText: bytezResponse.statusText,
-        body: errorText,
-        headers: Object.fromEntries(bytezResponse.headers.entries())
+    try {
+      // 转发请求到真实的 Bytez API
+      const bytezResponse = await fetch(`${BYTEZ_BASE_URL}/completions`, {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
+          "User-Agent": "bytez-proxy/1.0.0",
+          "Connection": "close" // 避免连接复用问题
+        },
+        body: JSON.stringify(requestBody),
+        signal: controller.signal
       });
+
+      clearTimeout(timeoutId);
+      console.log(`[${requestId}] Bytez API completion响应状态:`, bytezResponse.status);
+
+      if (!bytezResponse.ok) {
+        const errorText = await bytezResponse.text();
+        console.error(`[${requestId}] Bytez API completion错误:`, {
+          status: bytezResponse.status,
+          statusText: bytezResponse.statusText,
+          body: errorText
+        });
+        
+        ctx.response.status = bytezResponse.status;
+        
+        try {
+          const errorJson = JSON.parse(errorText);
+          ctx.response.body = { 
+            error: `Bytez API 错误: ${bytezResponse.status}`,
+            details: errorJson
+          };
+        } catch {
+          ctx.response.body = { 
+            error: `Bytez API 错误: ${bytezResponse.status}`,
+            details: errorText
+          };
+        }
+        return;
+      }
+
+      // 如果是流式响应，需要特殊处理
+      if (stream) {
+        console.log(`[${requestId}] 处理completion流式响应`);
+        ctx.response.headers.set("Content-Type", "text/event-stream; charset=utf-8");
+        ctx.response.headers.set("Cache-Control", "no-cache");
+        ctx.response.headers.set("Connection", "keep-alive");
+        ctx.response.headers.set("Access-Control-Allow-Origin", "*");
+        
+        const reader = bytezResponse.body?.getReader();
+        const encoder = new TextEncoder();
+        
+        if (!reader) {
+          throw new Error("无法读取响应流");
+        }
+
+        // 创建一个异步生成器来处理流
+        async function* streamGenerator() {
+          try {
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) {
+                console.log(`[${requestId}] completion流式响应完成`);
+                break;
+              }
+              
+              const chunk = new TextDecoder().decode(value);
+              console.log(`[${requestId}] 收到completion流数据:`, chunk.substring(0, 100) + (chunk.length > 100 ? "..." : ""));
+              yield encoder.encode(chunk);
+            }
+          } catch (error) {
+            console.error(`[${requestId}] completion流处理错误:`, error);
+            // 发送错误结束标记
+            yield encoder.encode(`data: {"error": "流处理中断: ${error.message}"}\n\n`);
+            yield encoder.encode("data: [DONE]\n\n");
+          } finally {
+            reader.releaseLock();
+          }
+        }
+
+        ctx.response.body = streamGenerator();
+      } else {
+        // 非流式响应
+        const result = await bytezResponse.json();
+        console.log(`[${requestId}] completion成功响应:`, JSON.stringify(result, null, 2));
+        ctx.response.body = result;
+      }
+
+    } catch (fetchError) {
+      clearTimeout(timeoutId);
       
-      ctx.response.status = bytezResponse.status;
-      
-      // 尝试解析错误响应
-      try {
-        const errorJson = JSON.parse(errorText);
+      if (fetchError.name === 'AbortError') {
+        console.error(`[${requestId}] completion请求被中止（超时）`);
+        ctx.response.status = 408;
+        ctx.response.body = { error: "请求超时，请稍后重试" };
+      } else {
+        console.error(`[${requestId}] completion请求异常:`, fetchError);
+        ctx.response.status = 500;
         ctx.response.body = { 
-          error: `Bytez API 错误: ${bytezResponse.status}`,
-          details: errorJson
-        };
-      } catch {
-        ctx.response.body = { 
-          error: `Bytez API 错误: ${bytezResponse.status}`,
-          details: errorText
+          error: "请求失败",
+          details: fetchError.message
         };
       }
-      return;
     }
 
-    // 如果是流式响应，直接转发
-    if (stream) {
-      ctx.response.headers.set("Content-Type", "text/event-stream; charset=utf-8");
-      ctx.response.headers.set("Cache-Control", "no-cache");
-      ctx.response.headers.set("Connection", "keep-alive");
-      
-      ctx.response.body = bytezResponse.body;
-    } else {
-      // 非流式响应，解析 JSON
-      const result = await bytezResponse.json();
-      console.log("Bytez API completion成功响应:", JSON.stringify(result, null, 2));
-      ctx.response.body = result;
-    }
   } catch (error) {
-    console.error("处理请求错误:", error);
+    console.error(`[${requestId}] 处理completion请求错误:`, error);
     ctx.response.status = 500;
     ctx.response.body = { 
       error: "Internal Server Error",
@@ -335,7 +462,7 @@ app.use(async (ctx, next) => {
   try {
     await next();
   } catch (err) {
-    console.error("错误:", err);
+    console.error("全局错误:", err);
     ctx.response.status = 500;
     ctx.response.body = { error: "Internal Server Error" };
   }
