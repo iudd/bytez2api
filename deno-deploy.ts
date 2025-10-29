@@ -11,6 +11,16 @@ const router = new Router();
 // Bytez API 端点 - 基于你原有代码的正确配置
 const BYTEZ_BASE_URL = "https://api.bytez.com/models/v2/openai/v1";
 
+// 模型配置 - 不同模型支持的参数不同
+const MODEL_CONFIG = {
+  "openai-community/gpt2": {
+    supportedParams: ["model", "prompt", "temperature", "max_tokens", "stream", "top_p", "stop"]
+  },
+  "Qwen/Qwen3-4B": {
+    supportedParams: ["model", "messages", "temperature", "max_tokens", "stream", "top_p", "stop", "frequency_penalty", "presence_penalty"]
+  }
+};
+
 // 健康检查
 router.get("/", (ctx) => {
   ctx.response.body = {
@@ -83,21 +93,35 @@ router.post("/v1/chat/completions", async (ctx) => {
       return;
     }
 
-    // 构建请求体，添加更多必要字段
-    const requestBody = {
+    // 根据模型构建请求体，只包含支持的参数
+    const modelConfig = MODEL_CONFIG[model] || MODEL_CONFIG["Qwen/Qwen3-4B"];
+    const requestBody: any = {
       model: model,
       messages: messages,
-      temperature: requestData.temperature || 0.7,
-      max_tokens: requestData.max_tokens || 150,
-      stream: stream,
-      // 添加可能需要的额外字段
-      top_p: requestData.top_p || 1,
-      frequency_penalty: requestData.frequency_penalty || 0,
-      presence_penalty: requestData.presence_penalty || 0,
-      stop: requestData.stop || null
+      stream: stream
     };
 
-    console.log("发送到Bytez的请求:", JSON.stringify(requestBody, null, 2));
+    // 只添加模型支持的参数
+    if (modelConfig.supportedParams.includes("temperature")) {
+      requestBody.temperature = requestData.temperature ?? 0.7;
+    }
+    if (modelConfig.supportedParams.includes("max_tokens")) {
+      requestBody.max_tokens = requestData.max_tokens || 150;
+    }
+    if (modelConfig.supportedParams.includes("top_p")) {
+      requestBody.top_p = requestData.top_p ?? 1;
+    }
+    if (modelConfig.supportedParams.includes("frequency_penalty")) {
+      requestBody.frequency_penalty = requestData.frequency_penalty ?? 0;
+    }
+    if (modelConfig.supportedParams.includes("presence_penalty")) {
+      requestBody.presence_penalty = requestData.presence_penalty ?? 0;
+    }
+    if (modelConfig.supportedParams.includes("stop")) {
+      requestBody.stop = requestData.stop || null;
+    }
+
+    console.log("发送到Bytez的chat请求:", JSON.stringify(requestBody, null, 2));
 
     // 转发请求到真实的 Bytez API
     const bytezResponse = await fetch(`${BYTEZ_BASE_URL}/chat/completions`, {
@@ -111,11 +135,10 @@ router.post("/v1/chat/completions", async (ctx) => {
     });
 
     console.log("Bytez API响应状态:", bytezResponse.status);
-    console.log("Bytez API响应头:", Object.fromEntries(bytezResponse.headers.entries()));
 
     if (!bytezResponse.ok) {
       const errorText = await bytezResponse.text();
-      console.error("Bytez API 错误详情:", {
+      console.error("Bytez API chat错误详情:", {
         status: bytezResponse.status,
         statusText: bytezResponse.statusText,
         body: errorText,
@@ -150,7 +173,7 @@ router.post("/v1/chat/completions", async (ctx) => {
     } else {
       // 非流式响应，解析 JSON
       const result = await bytezResponse.json();
-      console.log("Bytez API成功响应:", JSON.stringify(result, null, 2));
+      console.log("Bytez API chat成功响应:", JSON.stringify(result, null, 2));
       ctx.response.body = result;
     }
 
@@ -207,19 +230,33 @@ router.post("/v1/completions", async (ctx) => {
       return;
     }
 
-    // 构建请求体，添加更多必要字段
-    const requestBody = {
+    // 根据模型构建请求体，只包含支持的参数
+    const modelConfig = MODEL_CONFIG[model] || MODEL_CONFIG["openai-community/gpt2"];
+    const requestBody: any = {
       model: model,
       prompt: prompt,
-      temperature: requestData.temperature || 0.7,
-      max_tokens: requestData.max_tokens || 150,
-      stream: stream,
-      // 添加可能需要的额外字段
-      top_p: requestData.top_p || 1,
-      frequency_penalty: requestData.frequency_penalty || 0,
-      presence_penalty: requestData.presence_penalty || 0,
-      stop: requestData.stop || null
+      stream: stream
     };
+
+    // 只添加模型支持的参数
+    if (modelConfig.supportedParams.includes("temperature")) {
+      requestBody.temperature = requestData.temperature ?? 0.7;
+    }
+    if (modelConfig.supportedParams.includes("max_tokens")) {
+      requestBody.max_tokens = requestData.max_tokens || 150;
+    }
+    if (modelConfig.supportedParams.includes("top_p")) {
+      requestBody.top_p = requestData.top_p ?? 1;
+    }
+    if (modelConfig.supportedParams.includes("frequency_penalty")) {
+      requestBody.frequency_penalty = requestData.frequency_penalty ?? 0;
+    }
+    if (modelConfig.supportedParams.includes("presence_penalty")) {
+      requestBody.presence_penalty = requestData.presence_penalty ?? 0;
+    }
+    if (modelConfig.supportedParams.includes("stop")) {
+      requestBody.stop = requestData.stop || null;
+    }
 
     console.log("发送到Bytez的completion请求:", JSON.stringify(requestBody, null, 2));
 
