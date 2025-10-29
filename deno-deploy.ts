@@ -8,9 +8,8 @@ import { Application, Router } from "https://deno.land/x/oak@v12.6.1/mod.ts";
 const app = new Application();
 const router = new Router();
 
-// Bytez API 端点
-const BYTEZ_CHAT_URL = "https://api.bytez.com/models/v2/task/chat";
-const BYTEZ_COMPLETION_URL = "https://api.bytez.com/models/v2/openai/v1/completions";
+// Bytez API 端点 - 基于你原有代码的正确配置
+const BYTEZ_BASE_URL = "https://api.bytez.com/models/v2/openai/v1";
 
 // 健康检查
 router.get("/", (ctx) => {
@@ -85,7 +84,7 @@ router.post("/v1/chat/completions", async (ctx) => {
     }
 
     // 转发请求到真实的 Bytez API
-    const bytezResponse = await fetch(BYTEZ_CHAT_URL, {
+    const bytezResponse = await fetch(`${BYTEZ_BASE_URL}/chat/completions`, {
       method: "POST",
       headers: {
         "Authorization": `Bearer ${apiKey}`,
@@ -172,7 +171,7 @@ router.post("/v1/completions", async (ctx) => {
     }
 
     // 转发请求到真实的 Bytez API
-    const bytezResponse = await fetch(BYTEZ_COMPLETION_URL, {
+    const bytezResponse = await fetch(`${BYTEZ_BASE_URL}/completions`, {
       method: "POST",
       headers: {
         "Authorization": `Bearer ${apiKey}`,
