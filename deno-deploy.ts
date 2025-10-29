@@ -83,27 +83,60 @@ router.post("/v1/chat/completions", async (ctx) => {
       return;
     }
 
+    // 构建请求体，添加更多必要字段
+    const requestBody = {
+      model: model,
+      messages: messages,
+      temperature: requestData.temperature || 0.7,
+      max_tokens: requestData.max_tokens || 150,
+      stream: stream,
+      // 添加可能需要的额外字段
+      top_p: requestData.top_p || 1,
+      frequency_penalty: requestData.frequency_penalty || 0,
+      presence_penalty: requestData.presence_penalty || 0,
+      stop: requestData.stop || null
+    };
+
+    console.log("发送到Bytez的请求:", JSON.stringify(requestBody, null, 2));
+
     // 转发请求到真实的 Bytez API
     const bytezResponse = await fetch(`${BYTEZ_BASE_URL}/chat/completions`, {
       method: "POST",
       headers: {
         "Authorization": `Bearer ${apiKey}`,
         "Content-Type": "application/json",
+        "User-Agent": "bytez-proxy/1.0.0"
       },
-      body: JSON.stringify({
-        model: model,
-        messages: messages,
-        temperature: requestData.temperature || 0.7,
-        max_tokens: requestData.max_tokens || 150,
-        stream: stream
-      })
+      body: JSON.stringify(requestBody)
     });
+
+    console.log("Bytez API响应状态:", bytezResponse.status);
+    console.log("Bytez API响应头:", Object.fromEntries(bytezResponse.headers.entries()));
 
     if (!bytezResponse.ok) {
       const errorText = await bytezResponse.text();
-      console.error("Bytez API 错误:", bytezResponse.status, errorText);
+      console.error("Bytez API 错误详情:", {
+        status: bytezResponse.status,
+        statusText: bytezResponse.statusText,
+        body: errorText,
+        headers: Object.fromEntries(bytezResponse.headers.entries())
+      });
+      
       ctx.response.status = bytezResponse.status;
-      ctx.response.body = { error: `Bytez API 错误: ${bytezResponse.status}` };
+      
+      // 尝试解析错误响应
+      try {
+        const errorJson = JSON.parse(errorText);
+        ctx.response.body = { 
+          error: `Bytez API 错误: ${bytezResponse.status}`,
+          details: errorJson
+        };
+      } catch {
+        ctx.response.body = { 
+          error: `Bytez API 错误: ${bytezResponse.status}`,
+          details: errorText
+        };
+      }
       return;
     }
 
@@ -117,13 +150,17 @@ router.post("/v1/chat/completions", async (ctx) => {
     } else {
       // 非流式响应，解析 JSON
       const result = await bytezResponse.json();
+      console.log("Bytez API成功响应:", JSON.stringify(result, null, 2));
       ctx.response.body = result;
     }
 
   } catch (error) {
     console.error("处理请求错误:", error);
     ctx.response.status = 500;
-    ctx.response.body = { error: "Internal Server Error" };
+    ctx.response.body = { 
+      error: "Internal Server Error",
+      details: error.message
+    };
   }
 });
 
@@ -170,27 +207,59 @@ router.post("/v1/completions", async (ctx) => {
       return;
     }
 
+    // 构建请求体，添加更多必要字段
+    const requestBody = {
+      model: model,
+      prompt: prompt,
+      temperature: requestData.temperature || 0.7,
+      max_tokens: requestData.max_tokens || 150,
+      stream: stream,
+      // 添加可能需要的额外字段
+      top_p: requestData.top_p || 1,
+      frequency_penalty: requestData.frequency_penalty || 0,
+      presence_penalty: requestData.presence_penalty || 0,
+      stop: requestData.stop || null
+    };
+
+    console.log("发送到Bytez的completion请求:", JSON.stringify(requestBody, null, 2));
+
     // 转发请求到真实的 Bytez API
     const bytezResponse = await fetch(`${BYTEZ_BASE_URL}/completions`, {
       method: "POST",
       headers: {
         "Authorization": `Bearer ${apiKey}`,
         "Content-Type": "application/json",
+        "User-Agent": "bytez-proxy/1.0.0"
       },
-      body: JSON.stringify({
-        model: model,
-        prompt: prompt,
-        temperature: requestData.temperature || 0.7,
-        max_tokens: requestData.max_tokens || 150,
-        stream: stream
-      })
+      body: JSON.stringify(requestBody)
     });
+
+    console.log("Bytez API completion响应状态:", bytezResponse.status);
 
     if (!bytezResponse.ok) {
       const errorText = await bytezResponse.text();
-      console.error("Bytez API 错误:", bytezResponse.status, errorText);
+      console.error("Bytez API completion错误详情:", {
+        status: bytezResponse.status,
+        statusText: bytezResponse.statusText,
+        body: errorText,
+        headers: Object.fromEntries(bytezResponse.headers.entries())
+      });
+      
       ctx.response.status = bytezResponse.status;
-      ctx.response.body = { error: `Bytez API 错误: ${bytezResponse.status}` };
+      
+      // 尝试解析错误响应
+      try {
+        const errorJson = JSON.parse(errorText);
+        ctx.response.body = { 
+          error: `Bytez API 错误: ${bytezResponse.status}`,
+          details: errorJson
+        };
+      } catch {
+        ctx.response.body = { 
+          error: `Bytez API 错误: ${bytezResponse.status}`,
+          details: errorText
+        };
+      }
       return;
     }
 
@@ -204,12 +273,16 @@ router.post("/v1/completions", async (ctx) => {
     } else {
       // 非流式响应，解析 JSON
       const result = await bytezResponse.json();
+      console.log("Bytez API completion成功响应:", JSON.stringify(result, null, 2));
       ctx.response.body = result;
     }
   } catch (error) {
     console.error("处理请求错误:", error);
     ctx.response.status = 500;
-    ctx.response.body = { error: "Internal Server Error" };
+    ctx.response.body = { 
+      error: "Internal Server Error",
+      details: error.message
+    };
   }
 });
 
