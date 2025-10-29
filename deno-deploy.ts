@@ -9,7 +9,8 @@ const app = new Application();
 const router = new Router();
 
 // Bytez API 端点
-const BYTEZ_BASE_URL = "https://api.bytez.com/models/v2/openai/v1";
+const BYTEZ_CHAT_URL = "https://api.bytez.com/models/v2/task/chat";
+const BYTEZ_COMPLETION_URL = "https://api.bytez.com/models/v2/openai/v1/completions";
 
 // 健康检查
 router.get("/", (ctx) => {
@@ -43,11 +44,23 @@ router.get("/v1/models", (ctx) => {
 // 聊天补全 API (连接到真实 Bytez API)
 router.post("/v1/chat/completions", async (ctx) => {
   try {
-    // 检查认证
+    // 检查认证 - 支持 Bearer 和 BYTEZ_KEY 两种格式
     const authorization = ctx.request.headers.get("authorization");
-    if (!authorization || !authorization.startsWith("BYTEZ_KEY ")) {
+    let apiKey = null;
+    
+    if (!authorization) {
       ctx.response.status = 401;
-      ctx.response.body = { error: "需要 BYTEZ_KEY 认证" };
+      ctx.response.body = { error: "需要 API Key 认证" };
+      return;
+    }
+    
+    if (authorization.startsWith("Bearer ")) {
+      apiKey = authorization.slice(7);
+    } else if (authorization.startsWith("BYTEZ_KEY ")) {
+      apiKey = authorization.slice(10);
+    } else {
+      ctx.response.status = 401;
+      ctx.response.body = { error: "无效的认证格式，请使用 Bearer 或 BYTEZ_KEY" };
       return;
     }
 
@@ -72,10 +85,10 @@ router.post("/v1/chat/completions", async (ctx) => {
     }
 
     // 转发请求到真实的 Bytez API
-    const bytezResponse = await fetch(`${BYTEZ_BASE_URL}/chat/completions`, {
+    const bytezResponse = await fetch(BYTEZ_CHAT_URL, {
       method: "POST",
       headers: {
-        "Authorization": authorization,
+        "Authorization": `Bearer ${apiKey}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
@@ -118,11 +131,23 @@ router.post("/v1/chat/completions", async (ctx) => {
 // 文本补全 API (连接到真实 Bytez API)
 router.post("/v1/completions", async (ctx) => {
   try {
-    // 检查认证
+    // 检查认证 - 支持 Bearer 和 BYTEZ_KEY 两种格式
     const authorization = ctx.request.headers.get("authorization");
-    if (!authorization || !authorization.startsWith("BYTEZ_KEY ")) {
+    let apiKey = null;
+    
+    if (!authorization) {
       ctx.response.status = 401;
-      ctx.response.body = { error: "需要 BYTEZ_KEY 认证" };
+      ctx.response.body = { error: "需要 API Key 认证" };
+      return;
+    }
+    
+    if (authorization.startsWith("Bearer ")) {
+      apiKey = authorization.slice(7);
+    } else if (authorization.startsWith("BYTEZ_KEY ")) {
+      apiKey = authorization.slice(10);
+    } else {
+      ctx.response.status = 401;
+      ctx.response.body = { error: "无效的认证格式，请使用 Bearer 或 BYTEZ_KEY" };
       return;
     }
 
@@ -147,10 +172,10 @@ router.post("/v1/completions", async (ctx) => {
     }
 
     // 转发请求到真实的 Bytez API
-    const bytezResponse = await fetch(`${BYTEZ_BASE_URL}/completions`, {
+    const bytezResponse = await fetch(BYTEZ_COMPLETION_URL, {
       method: "POST",
       headers: {
-        "Authorization": authorization,
+        "Authorization": `Bearer ${apiKey}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
@@ -211,7 +236,7 @@ app.use(router.routes());
 app.use(router.allowedMethods());
 
 // 启动服务器
-const port = 8000;
+const port = parseInt(Deno.env.get("PORT") || "8000");
 console.log(`🚀 Deno Deploy 服务器运行在 http://localhost:${port}`);
 console.log(`📚 Bytez-OpenAI-Proxy Deno Deploy 版本 v1.0.0`);
 await app.listen({ port });
