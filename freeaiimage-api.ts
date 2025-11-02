@@ -65,6 +65,12 @@ router.get("/v1/models", (ctx) => {
       created: 1234567890, 
       owned_by: "freeaiimage" 
     },
+    { 
+      id: "dall-e-2", 
+      object: "model", 
+      created: 1234567890, 
+      owned_by: "freeaiimage" 
+    },
   ];
   ctx.response.body = { object: "list", data: models };
 });
@@ -92,12 +98,36 @@ router.post("/v1/images/generations", async (ctx) => {
       return;
     }
 
-    // 解析尺寸
-    const [width, height] = size.split("x").map(Number);
-    if (!width || !height) {
-      ctx.response.status = 400;
-      ctx.response.body = { error: "无效的尺寸格式，请使用 '宽x高' 格式" };
-      return;
+    // 解析尺寸 - 支持标准比例和自定义尺寸
+    let width = 1024, height = 1024;
+    
+    if (size) {
+      // 处理标准比例
+      const sizeMap: {[key: string]: [number, number]} = {
+        "1024x1024": [1024, 1024],    // 1:1 正方形
+        "1792x1024": [1792, 1024],    // 16:9 横屏
+        "1024x1792": [1024, 1792],    // 9:16 竖屏
+        "1365x1024": [1365, 1024],    // 4:3 传统比例
+        "1024x1365": [1024, 1365],    // 3:4 竖版比例
+      };
+      
+      if (sizeMap[size]) {
+        [width, height] = sizeMap[size];
+      } else {
+        // 尝试解析自定义尺寸
+        const dimensions = size.split("x").map(Number);
+        if (dimensions.length === 2 && dimensions[0] > 0 && dimensions[1] > 0) {
+          [width, height] = dimensions;
+        } else {
+          ctx.response.status = 400;
+          ctx.response.body = { 
+            error: "无效的尺寸格式",
+            supported_sizes: ["1024x1024", "1792x1024", "1024x1792", "1365x1024", "1024x1365"],
+            message: "请使用标准比例或自定义宽x高格式"
+          };
+          return;
+        }
+      }
     }
 
     // 创建任务
